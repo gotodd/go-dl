@@ -145,8 +145,10 @@ func (d *downloader) Download() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		fmt.Printf("multi download\n")
 		d.multiDownload(contentSize)
 	} else {
+		fmt.Printf("simple download\n")
 		d.simpleDownload()
 	}
 }
@@ -274,6 +276,7 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 		log.Fatal(err)
 	}
 	defer f.Close()
+	defer fmt.Printf("part %d finished\n", partialNum)
 
 	// copy to output file
 	for {

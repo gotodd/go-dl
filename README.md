@@ -2,6 +2,7 @@ Dead simple file downloader
 - [X] parallel download
 - [X] resumable
 - [X] [progressbar](https://github.com/schollz/progressbar)
+- [X] Straggler detection and fix
 
 ### Install
 ```
