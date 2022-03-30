@@ -22,9 +22,7 @@ import (
 
 const (
 	DefaultConcurrency = 80
-	DefaultPartSize    = (150 * 1024)
-	MinPartSize        = (150 * 1024)
-	MaxPartSize        = (600 * 1024)
+	DefaultPartSize    = (4024 * 1024)
 )
 
 var (
@@ -33,6 +31,7 @@ var (
 	AverageTime     float64
 	TotalParts      float64
 	ChParts         chan int
+	ChSlots         chan int
 )
 
 type Config struct {
@@ -217,7 +216,7 @@ func (d *downloader) multiDownload(contentSize int) {
 
 	d.bar = progressbar.DefaultBytes(int64(contentSize), "downloading")
 
-	ChParts := make(chan int, d.config.Concurrency)
+	ChParts := make(chan int, int(TotalParts))
 	go func() {
 		for i := 1; i <= int(TotalParts); i++ {
 			fmt.Printf("writing %d to Channel \n", i)
@@ -227,8 +226,21 @@ func (d *downloader) multiDownload(contentSize int) {
 	time.Sleep(100 * time.Millisecond)
 
 	startRange := 0
+	ChSlots := make(chan int, d.config.Concurrency)
+
 	for PartFinished < TotalParts {
-		i := <-ChParts
+		var i int
+		select {
+		case i = <-ChParts:
+			fmt.Printf("i=%d\n", i)
+		case <-time.After(1 * time.Second):
+			fmt.Printf("timeout 1, finished %.1f, total %.1f", PartFinished, TotalParts)
+			continue
+		}
+
+		//this will block if ChSlots is full
+		ChSlots <- 1
+		fmt.Printf("downloading part %d\n", i)
 		if i == int(TotalParts) {
 			go d.downloadPartial(startRange, contentSize, i, wg)
 		} else {
@@ -269,6 +281,7 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 		return
 	}
 
+	fmt.Printf("pn=%d %d:%d\n", partialNum, rangeStart, rangeStop)
 	// handle resume
 	downloaded := 0
 	if d.config.Resume {
@@ -302,7 +315,6 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer res.Body.Close()
 
 	// create the output file
 	outputPath := d.getPartFilename(partialNum)
@@ -314,13 +326,13 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer f.Close()
 
 	startTime := time.Now()
-	defer reportTime(partialNum, time.Since(startTime))
 
+	fmt.Printf("start copying file\n")
 	// copy to output file
-	for {
+	done := false
+	for !done {
 		select {
 		case <-d.context.Done():
 			return
@@ -328,7 +340,9 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 			_, err = io.CopyN(io.MultiWriter(f, d.bar), res.Body, int64(d.config.CopyBufferSize))
 			if err != nil {
 				if err == io.EOF {
-					return
+					fmt.Printf("%d finished\n", partialNum)
+					done = true
+					break
 				} else if e, ok := err.(net.Error); ok && e.Timeout() { // handle timeout
 					break
 				} else {
@@ -336,6 +350,7 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 				}
 			}
 		}
+
 		// check if the download is taking too long
 		if PartFinished/TotalParts > 0.8 && time.Since(startTime).Seconds() > 20 {
 			if time.Since(startTime).Seconds() > (AverageTime * 2) {
@@ -346,9 +361,15 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 		}
 	}
 
+	res.Body.Close()
+	f.Close()
+	reportTime(partialNum, time.Since(startTime))
+
 }
 
 func reportTime(partialNum int, elapsed time.Duration) {
+	x := <-ChSlots
+	fmt.Printf("Chslot %d\n", x)
 	AccumulatedTime += elapsed.Seconds()
 	PartFinished += 1.0
 	AverageTime = AccumulatedTime / PartFinished
