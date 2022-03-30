@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
+	"net"
 	"net/http"
 	"os"
 	"path"
@@ -13,13 +15,30 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/schollz/progressbar/v3"
+)
+
+const (
+	DefaultConcurrency = 80
+	DefaultPartSize    = (150 * 1024)
+	MinPartSize        = (150 * 1024)
+	MaxPartSize        = (600 * 1024)
+)
+
+var (
+	AccumulatedTime float64
+	PartFinished    float64
+	AverageTime     float64
+	TotalParts      float64
+	ChParts         chan int
 )
 
 type Config struct {
 	Url         string
 	Concurrency int
+	PartSize    int
 
 	// output filename
 	OutFilename    string
@@ -97,7 +116,7 @@ func New(url string) (*downloader, error) {
 
 	config := &Config{
 		Url:         url,
-		Concurrency: 1,
+		Concurrency: DefaultConcurrency,
 	}
 
 	return NewFromConfig(config)
@@ -108,8 +127,12 @@ func NewFromConfig(config *Config) (*downloader, error) {
 		return nil, errors.New("Url is empty")
 	}
 	if config.Concurrency < 1 {
-		config.Concurrency = 1
-		log.Print("Concurrency level: 1")
+		config.Concurrency = DefaultConcurrency
+		log.Printf("Concurrency level: %d", config.Concurrency)
+	}
+	if config.PartSize < 1024 {
+		config.PartSize = DefaultPartSize
+		log.Printf("Part Size : %d", config.PartSize)
 	}
 	if config.OutFilename == "" {
 		config.OutFilename = detectFilename(config.Url)
@@ -185,37 +208,28 @@ func (d *downloader) simpleDownload() {
 
 // download concurrently
 func (d *downloader) multiDownload(contentSize int) {
-	partSize := contentSize / d.config.Concurrency
 
-	startRange := 0
+	partSize := d.config.PartSize
+	TotalParts = math.Ceil(float64(contentSize) / float64(partSize))
+
 	wg := &sync.WaitGroup{}
 	wg.Add(d.config.Concurrency)
 
 	d.bar = progressbar.DefaultBytes(int64(contentSize), "downloading")
 
+	ChParts := make(chan int, d.config.Concurrency)
 	for i := 1; i <= d.config.Concurrency; i++ {
+		ChParts <- i
+	}
 
-		// handle resume
-		downloaded := 0
-		if d.config.Resume {
-			filePath := d.getPartFilename(i)
-			f, err := os.Open(filePath)
-			if err == nil {
-				fileInfo, err := f.Stat()
-				if err == nil {
-					downloaded = int(fileInfo.Size())
-					// update progress bar
-					d.bar.Add64(int64(downloaded))
-				}
-			}
-		}
-
+	startRange := 0
+	for PartFinished < TotalParts {
+		i := <-ChParts
 		if i == d.config.Concurrency {
-			go d.downloadPartial(startRange+downloaded, contentSize, i, wg)
+			go d.downloadPartial(startRange, contentSize, i, wg)
 		} else {
-			go d.downloadPartial(startRange+downloaded, startRange+partSize, i, wg)
+			go d.downloadPartial(startRange, startRange+partSize, i, wg)
 		}
-
 		startRange += partSize + 1
 	}
 
@@ -251,6 +265,22 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 		return
 	}
 
+	// handle resume
+	downloaded := 0
+	if d.config.Resume {
+		filePath := d.getPartFilename(partialNum)
+		f, err := os.Open(filePath)
+		if err == nil {
+			fileInfo, err := f.Stat()
+			if err == nil {
+				downloaded = int(fileInfo.Size())
+				// update progress bar
+				d.bar.Add64(int64(downloaded))
+			}
+		}
+	}
+	rangeStart += downloaded
+
 	// create a request
 	req, err := http.NewRequest("GET", d.config.Url, nil)
 	if err != nil {
@@ -259,7 +289,11 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", rangeStart, rangeStop))
 
 	// make a request
-	res, err := http.DefaultClient.Do(req)
+	httpclient := http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	res, err := httpclient.Do(req)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -278,6 +312,7 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 	defer f.Close()
 	defer fmt.Printf("part %d finished\n", partialNum)
 
+	startTime := time.Now()
 	// copy to output file
 	for {
 		select {
@@ -288,12 +323,31 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 			if err != nil {
 				if err == io.EOF {
 					return
+				} else if e, ok := err.(net.Error); ok && e.Timeout() { // handle timeout
+					break
 				} else {
 					log.Fatal(err)
 				}
 			}
 		}
+		// check if the download is taking too long
+		if PartFinished/TotalParts > 0.8 && time.Since(startTime).Seconds() > 20 {
+			if time.Since(startTime).Seconds() > (AverageTime * 2) {
+				//return to restart this download
+				ChParts <- partialNum
+				d.config.Resume = true
+			}
+		}
 	}
+	elapsed := time.Since(startTime)
+	reportTime(partialNum, elapsed)
+}
+
+func reportTime(partialNum int, elapsed time.Duration) {
+	AccumulatedTime += elapsed.Seconds()
+	PartFinished += 1.0
+	AverageTime = AccumulatedTime / PartFinished
+	fmt.Printf("part %d (%d/%d) finished. Average time is %d seconds. \n", partialNum, PartFinished, TotalParts, int(AverageTime))
 }
 
 func detectFilename(url string) string {

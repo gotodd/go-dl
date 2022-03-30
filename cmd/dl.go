@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -10,20 +11,25 @@ import (
 )
 
 func main() {
-	url := flag.String("u", "", "* Download url")
-	concurrency := flag.Int("n", 1, "Concurrency level")
-	filename := flag.String("f", "", "Output file name")
+	concurrency := flag.Int("c", downloader.DefaultConcurrency, "Concurrency level")
+	partsize := flag.Int("s", downloader.DefaultPartSize, "Part size in bytes")
+	filename := flag.String("o", "", "Output file name")
 	bufferSize := flag.Int("buffer-size", 32*1024, "The buffer size to copy from http response body")
 	resume := flag.Bool("resume", false, "Resume the download")
 
 	flag.Parse()
-	if *url == "" {
-		log.Fatal("Please specify the url using -u parameter")
+	args := flag.Args() //non-flag arguments
+	if len(args) != 1 {
+		flag.Usage()
+		log.Fatal("Please specify the url. ")
 	}
+	url := args[0]
+	fmt.Printf("url=%s\n", url)
 
 	config := &downloader.Config{
-		Url:            *url,
+		Url:            url,
 		Concurrency:    *concurrency,
+		PartSize:       *partsize,
 		OutFilename:    *filename,
 		CopyBufferSize: *bufferSize,
 		Resume:         *resume,
