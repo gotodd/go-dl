@@ -218,14 +218,18 @@ func (d *downloader) multiDownload(contentSize int) {
 	d.bar = progressbar.DefaultBytes(int64(contentSize), "downloading")
 
 	ChParts := make(chan int, d.config.Concurrency)
-	for i := 1; i <= d.config.Concurrency; i++ {
-		ChParts <- i
-	}
+	go func() {
+		for i := 1; i <= int(TotalParts); i++ {
+			fmt.Printf("writing %d to Channel \n", i)
+			ChParts <- i
+		}
+	}()
+	time.Sleep(100 * time.Millisecond)
 
 	startRange := 0
 	for PartFinished < TotalParts {
 		i := <-ChParts
-		if i == d.config.Concurrency {
+		if i == int(TotalParts) {
 			go d.downloadPartial(startRange, contentSize, i, wg)
 		} else {
 			go d.downloadPartial(startRange, startRange+partSize, i, wg)
@@ -278,6 +282,7 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 				d.bar.Add64(int64(downloaded))
 			}
 		}
+		f.Close()
 	}
 	rangeStart += downloaded
 
@@ -310,9 +315,10 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 		log.Fatal(err)
 	}
 	defer f.Close()
-	defer fmt.Printf("part %d finished\n", partialNum)
 
 	startTime := time.Now()
+	defer reportTime(partialNum, time.Since(startTime))
+
 	// copy to output file
 	for {
 		select {
@@ -339,15 +345,14 @@ func (d *downloader) downloadPartial(rangeStart, rangeStop int, partialNum int, 
 			}
 		}
 	}
-	elapsed := time.Since(startTime)
-	reportTime(partialNum, elapsed)
+
 }
 
 func reportTime(partialNum int, elapsed time.Duration) {
 	AccumulatedTime += elapsed.Seconds()
 	PartFinished += 1.0
 	AverageTime = AccumulatedTime / PartFinished
-	fmt.Printf("part %d (%d/%d) finished. Average time is %d seconds. \n", partialNum, PartFinished, TotalParts, int(AverageTime))
+	fmt.Printf("part %d (%.1f/%.1f) finished. Average time is %.1f seconds. \n", partialNum, PartFinished, TotalParts, AverageTime)
 }
 
 func detectFilename(url string) string {
