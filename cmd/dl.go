@@ -16,6 +16,7 @@ func main() {
 	filename := flag.String("o", "", "Output file name")
 	bufferSize := flag.Int("buffer-size", 32*1024, "The buffer size to copy from http response body")
 	resume := flag.Bool("resume", false, "Resume the download")
+	verbose := flag.Bool("v", false, "verbose output")
 
 	flag.Parse()
 	args := flag.Args() //non-flag arguments
@@ -33,6 +34,7 @@ func main() {
 		OutFilename:    *filename,
 		CopyBufferSize: *bufferSize,
 		Resume:         *resume,
+		Verbose:        *verbose,
 	}
 	d, err := downloader.NewFromConfig(config)
 	if err != nil {
