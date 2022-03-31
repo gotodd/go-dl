@@ -226,7 +226,7 @@ func (d *downloader) multiDownload(contentSize int) {
 	time.Sleep(100 * time.Millisecond)
 
 	startRange := 0
-	ChSlots := make(chan int, d.config.Concurrency)
+	ChSlots = make(chan int, d.config.Concurrency)
 
 	for PartFinished < TotalParts {
 		var i int
@@ -249,7 +249,8 @@ func (d *downloader) multiDownload(contentSize int) {
 		startRange += partSize + 1
 	}
 
-	wg.Wait()
+	fmt.Printf("wg waiting\n")
+	//wg.Wait()
 	if !d.Paused {
 		d.merge()
 	}
@@ -258,15 +259,15 @@ func (d *downloader) multiDownload(contentSize int) {
 func (d *downloader) merge() {
 	destination, err := os.OpenFile(d.config.OutFilename, os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("1 %s\n", err)
 	}
 	defer destination.Close()
 
-	for i := 1; i <= d.config.Concurrency; i++ {
+	for i := 1; i <= int(TotalParts); i++ {
 		filename := d.getPartFilename(i)
 		source, err := os.OpenFile(filename, os.O_RDONLY, 0666)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("2 %s\n", err)
 		}
 		io.Copy(destination, source)
 		source.Close()
